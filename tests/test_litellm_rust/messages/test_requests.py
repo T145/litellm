@@ -146,3 +146,12 @@ async def test_optional_positional_body_parameters_reach_the_wire(server: Record
     assert response["id"] == MESSAGES_RESPONSE["id"]
     body, _ = sent(server)
     assert (body["metadata"], body["system"], body["temperature"]) == (args[3], args[6], args[7])
+
+
+@pytest.mark.asyncio
+async def test_service_tier_reaches_the_wire(server: RecordingServer) -> None:
+    await call(server, service_tier="standard_only")
+
+    body, _ = sent(server)
+    assert body["service_tier"] == "standard_only"
+

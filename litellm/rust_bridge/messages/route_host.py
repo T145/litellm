@@ -9,11 +9,13 @@ from pydantic import TypeAdapter, ValidationError
 
 import litellm
 from litellm.litellm_core_utils.core_helpers import normalize_drop_params
+from litellm.llms.anthropic.pass_through.messages.utils import anthropic_messages_optional_param_keys
 from litellm.llms.anthropic.pass_through.utils import is_reasoning_auto_summary_enabled
 from litellm.rust_bridge import failures
 from litellm.rust_bridge.public_call import optional_str
 from litellm.types.llms.anthropic_messages.anthropic_response import AnthropicMessagesResponse
 
+PARAMETERS: Final = tuple(sorted(anthropic_messages_optional_param_keys()))
 _DROP_PATHS: Final = TypeAdapter(list[object])
 
 
