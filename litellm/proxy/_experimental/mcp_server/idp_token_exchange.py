@@ -182,11 +182,20 @@ async def identity_from_subject_token(
 
 
 def _refusal_for(denied: Exception, reason: object) -> SubjectTokenRefusal:
+    outage: Final = gateway_outage_refusal(denied, reason, what="a subject_token")
+    if outage is not None:
+        return outage
+    verbose_proxy_logger.warning("token exchange refused a subject_token: %s", reason)
+    return SubjectTokenRefusal(error="invalid_request", description=REJECTED_SUBJECT_TOKEN)
+
+
+def gateway_outage_refusal(denied: Exception, reason: object, what: str) -> SubjectTokenRefusal | None:
+    """The ``temporarily_unavailable`` refusal when ``denied`` is the gateway failing to check
+    ``what`` (its database or the IdP's JWKS down), else ``None`` because the token itself was bad."""
     outage: Final = _gateway_could_not_verify(denied)
     if outage is None:
-        verbose_proxy_logger.warning("token exchange refused a subject_token: %s", reason)
-        return SubjectTokenRefusal(error="invalid_request", description=REJECTED_SUBJECT_TOKEN)
-    verbose_proxy_logger.error("token exchange could not verify a subject_token, %s: %s", outage, reason)
+        return None
+    verbose_proxy_logger.error("token endpoint could not verify %s, %s: %s", what, outage, reason)
     return SubjectTokenRefusal(error="temporarily_unavailable", description=_check_unavailable_description(outage))
 
 
