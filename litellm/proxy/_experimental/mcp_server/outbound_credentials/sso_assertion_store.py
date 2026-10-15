@@ -1,9 +1,9 @@
 """Store for the enterprise IdP identity assertion captured at SSO login (EMA).
 
-The ``oauth2_id_jag`` egress arm needs the user's IdP ``id_token`` as its RFC 8693
-``subject_token``. A front-door client holds an identity-only ``llm_session_`` bearer, not an
-IdP assertion, so the assertion captured at the one SSO login is the only usable subject
-source for it. This module owns both sides of that state: the SSO callback persists here
+The ``oauth2_id_jag`` egress arm needs the user's IdP identity assertion as its RFC 8693
+``subject_token``: the OIDC ``id_token``, or the signed SAML assertion when the login was SAML.
+A front-door client holds an identity-only ``llm_session_`` bearer, not an IdP assertion, so
+the assertion captured at the one SSO login is the only usable subject source for it. This module owns both sides of that state: the SSO callback persists here
 (write-through to the DB so a login on one pod is visible to every pod) and the resolver
 seam reads back by ``user_id``. Retention is gated on an ``oauth2_id_jag`` server actually
 being registered, so a gateway with no EMA upstream never stores bearer material.
@@ -17,6 +17,7 @@ TTL ``MCP_SSO_ASSERTION_CACHE_TTL_SECONDS``; invalidation also guards against st
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from litellm.proxy.utils import PrismaClient
 
 _ASSERTION_DECRYPT_LOG_KEY: Final = "sso_identity_assertion"
+SAML2_SUBJECT_TOKEN_TYPE: Final = "urn:ietf:params:oauth:token-type:saml2"
 _STR_ADAPTER: Final[TypeAdapter[str]] = TypeAdapter(str)
 _MAYBE_STR_ADAPTER: Final[TypeAdapter[str | None]] = TypeAdapter(str | None)
 
@@ -69,8 +71,10 @@ def _mcp_server_table(prisma_client: PrismaClient) -> _MCPServerTable:
 
 
 class SSOIdentityAssertion(LiteLLMBaseModel):
-    """The IdP material an EMA exchange needs: ``id_token`` is the RFC 8693 subject token,
-    ``expires_at`` bounds its usefulness, and the refresh token renews it without re-login."""
+    """The IdP material an EMA exchange needs: ``id_token`` is the RFC 8693 subject token (the OIDC
+    id_token, or the base64 signed ``<saml:Assertion>`` when ``subject_token_type`` names SAML),
+    ``expires_at`` bounds its usefulness, and the refresh token renews it without re-login.
+    ``subject_token_type`` is ``None`` when the exchange should send the operator-configured type."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -78,6 +82,7 @@ class SSOIdentityAssertion(LiteLLMBaseModel):
     refresh_token: SecretStr | None = None
     issuer: str | None = None
     expires_at: datetime | None = None
+    subject_token_type: str | None = None
 
 
 class SSOAssertionCache:
@@ -130,6 +135,7 @@ class _StoredAssertionPayload(LiteLLMBaseModel):
     refresh_token: str | None = None
     issuer: str | None = None
     expires_at: datetime | None = None
+    subject_token_type: str | None = None
 
 
 def assertion_from_sso_login(id_token: object, refresh_token: object) -> SSOIdentityAssertion | None:
@@ -157,6 +163,24 @@ def assertion_from_sso_login(id_token: object, refresh_token: object) -> SSOIden
         issuer=claims.iss,
         expires_at=expires_at,
     )
+
+
+def assertion_from_saml_login(
+    assertion_xml: bytes, not_on_or_after: int | None, issuer: str | None
+) -> SSOIdentityAssertion:
+    """The carrier for a SAML login: the signed ``<saml:Assertion>`` element the IdP issued, base64
+    encoded the way RFC 8693 carries a ``saml2`` subject token, with its own validity window as
+    the expiry and no refresh token, since SAML has none and the user has to sign in again."""
+    return SSOIdentityAssertion(
+        id_token=SecretStr(base64.urlsafe_b64encode(assertion_xml).rstrip(b"=").decode("ascii")),
+        issuer=issuer,
+        expires_at=datetime.fromtimestamp(not_on_or_after, tz=timezone.utc) if not_on_or_after is not None else None,
+        subject_token_type=SAML2_SUBJECT_TOKEN_TYPE,
+    )
+
+
+def is_saml_assertion(assertion: SSOIdentityAssertion) -> bool:
+    return assertion.subject_token_type == SAML2_SUBJECT_TOKEN_TYPE
 
 
 def assertion_expired(assertion: SSOIdentityAssertion, now: datetime) -> bool:
@@ -212,6 +236,7 @@ async def persist_sso_identity_assertion(
         **({"refresh_token": assertion.refresh_token.get_secret_value()} if assertion.refresh_token else {}),
         **({"issuer": assertion.issuer} if assertion.issuer else {}),
         **({"expires_at": assertion.expires_at.isoformat()} if assertion.expires_at else {}),
+        **({"subject_token_type": assertion.subject_token_type} if assertion.subject_token_type else {}),
     }
     encoded: Final = _STR_ADAPTER.validate_python(encrypt_value_helper(json.dumps(payload)))
     await _assertion_table(prisma_client).upsert(
@@ -250,6 +275,7 @@ async def _read_assertion_from_db(user_id: str) -> SSOIdentityAssertion | None:
         refresh_token=SecretStr(payload.refresh_token) if payload.refresh_token else None,
         issuer=payload.issuer,
         expires_at=payload.expires_at,
+        subject_token_type=payload.subject_token_type,
     )
 
 

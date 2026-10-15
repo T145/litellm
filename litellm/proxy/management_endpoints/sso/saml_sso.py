@@ -27,6 +27,7 @@ import hashlib
 import os
 import secrets
 import time
+from dataclasses import dataclass
 from typing import Final, cast
 from urllib.parse import parse_qsl
 
@@ -37,6 +38,10 @@ from pydantic import ValidationError
 from litellm._internal_context import with_service_target
 from litellm._logging import verbose_proxy_logger
 from litellm.caching.dual_cache import DualCache
+from litellm.proxy._experimental.mcp_server.outbound_credentials.sso_assertion_store import (
+    SSOIdentityAssertion,
+    assertion_from_saml_login,
+)
 from litellm.proxy.auth.ip_address_utils import IPAddressUtils
 from litellm.proxy.management_endpoints.sso_helper_utils import SSO_SESSIONS_TARGET
 from litellm.proxy.management_endpoints.types import CustomOpenID, get_litellm_user_role
@@ -95,6 +100,15 @@ _LAST_NAME_ATTRIBUTE_CANDIDATES: Final = (
 )
 _ROLE_ATTRIBUTE_CANDIDATES: Final = ("role", "roles", "litellm_role")
 _TEAM_IDS_ATTRIBUTE_CANDIDATES: Final = ("teams", "team_ids", "groups")
+
+
+@dataclass(frozen=True, slots=True)
+class SAMLLoginResult:
+    """A validated SAML login: who signed in, and the signed assertion that proved it, retained so the
+    ``oauth2_id_jag`` arm can present it as an RFC 8693 ``saml2`` subject token."""
+
+    user: CustomOpenID
+    assertion: SSOIdentityAssertion | None
 
 
 def _saml_unavailable_error() -> HTTPException:
@@ -310,7 +324,7 @@ class SAMLAuthHandler:
         return dict(parse_qsl(body.decode("utf-8", "replace")))
 
     @staticmethod
-    async def handle_acs(request: Request, cache: DualCache, post_data: dict[str, str]) -> CustomOpenID:
+    async def handle_acs(request: Request, cache: DualCache, post_data: dict[str, str]) -> SAMLLoginResult:
         auth: Final = await SAMLAuthHandler._build_auth(request, cache, post_data=post_data)
         browser_request_id: Final = request.cookies.get(_SAML_AUTHN_STATE_COOKIE)
         try:
@@ -330,7 +344,32 @@ class SAMLAuthHandler:
             )
 
         await SAMLAuthHandler._enforce_response_binding(auth, cache, browser_request_id)
-        return SAMLAuthHandler._result_from_auth(auth)
+        return SAMLLoginResult(
+            user=SAMLAuthHandler._result_from_auth(auth),
+            assertion=SAMLAuthHandler._retained_assertion(auth),
+        )
+
+    @staticmethod
+    def _retained_assertion(auth: "OneLogin_Saml2_Auth") -> SSOIdentityAssertion | None:
+        """The one signed ``<saml:Assertion>`` the validated response carried, serialized on its own
+        so its enveloped signature still verifies at the IdP's token endpoint."""
+        xml: Final = cast(bytes | None, auth.get_last_response_xml())  # cast-ok: untyped python3-saml
+        if not xml:
+            return None
+        root: Final = OneLogin_Saml2_XML.to_etree(xml)
+        assertions: Final = OneLogin_Saml2_XML.query(root, "//saml:Assertion")
+        if len(assertions) != 1:
+            return None
+        issuers: Final = OneLogin_Saml2_XML.query(assertions[0], "./saml:Issuer")
+        issuer: Final = cast(str | None, issuers[0].text) if issuers else None  # cast-ok: untyped python3-saml
+        not_on_or_after: Final = auth.get_last_assertion_not_on_or_after()
+        return assertion_from_saml_login(
+            assertion_xml=cast(
+                bytes, OneLogin_Saml2_XML.to_string(assertions[0], encoding="utf-8")
+            ),  # cast-ok: untyped python3-saml
+            not_on_or_after=not_on_or_after if isinstance(not_on_or_after, int) else None,
+            issuer=issuer,
+        )
 
     @staticmethod
     def _replay_guard_ttl(auth: "OneLogin_Saml2_Auth") -> int:

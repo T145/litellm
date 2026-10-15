@@ -2319,7 +2319,7 @@ async def saml_callback(request: Request):
     if "SAMLResponse" not in post_data:
         raise HTTPException(status_code=400, detail="Missing SAMLResponse in callback request.")
 
-    result: Final = await SAMLAuthHandler.handle_acs(request=request, cache=user_api_key_cache, post_data=post_data)
+    login: Final = await SAMLAuthHandler.handle_acs(request=request, cache=user_api_key_cache, post_data=post_data)
 
     await _raise_if_sso_exceeds_free_user_limit(premium_user, prisma_client)
 
@@ -2332,7 +2332,7 @@ async def saml_callback(request: Request):
     )
 
     return await SSOAuthenticationHandler.get_redirect_response_from_openid(
-        result=result,
+        result=login.user,
         request=request,
         received_response=None,
         generic_client_id=None,
@@ -2340,6 +2340,7 @@ async def saml_callback(request: Request):
         access_token_payload=None,
         jwt_handler=jwt_handler,
         return_to=cp_return_to,
+        sso_assertion=login.assertion,
     )
 
 
