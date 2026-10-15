@@ -5814,7 +5814,8 @@ def completion(
         _azure_detection_model: Final = base_model or model
 
         if isinstance(
-            plan_chat_route(responses_api_model_info.get("mode"), skip_responses_api_bridge), NativeResponses
+            plan_chat_route(responses_api_model_info.get("mode") == "responses", skip_responses_api_bridge is True),
+            NativeResponses,
         ):
             from litellm.completion_extras import responses_api_bridge
 

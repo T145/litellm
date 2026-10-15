@@ -83,15 +83,15 @@ def test_responses_reach_chat_without_a_provider_config_or_when_asked(
 
 
 @pytest.mark.parametrize(
-    ("model_mode", "skip_responses_api_bridge", "expected"),
+    ("responses_mode_model", "skip_responses_api_bridge", "expected"),
     [
-        ("responses", False, NativeResponses()),
-        ("responses", True, NativeChat()),
-        ("chat", False, NativeChat()),
-        (None, False, NativeChat()),
+        (True, False, NativeResponses()),
+        (True, True, NativeChat()),
+        (False, False, NativeChat()),
+        (False, True, NativeChat()),
     ],
 )
 def test_chat_bridges_to_responses_only_for_responses_mode_models(
-    model_mode: object, skip_responses_api_bridge: bool, expected: RoutePlan
+    responses_mode_model: bool, skip_responses_api_bridge: bool, expected: RoutePlan
 ):
-    assert plan_chat_route(model_mode, skip_responses_api_bridge) == expected
+    assert plan_chat_route(responses_mode_model, skip_responses_api_bridge) == expected

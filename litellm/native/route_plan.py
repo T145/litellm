@@ -141,8 +141,8 @@ def plan_responses_route(
     return NativeResponses()
 
 
-def plan_chat_route(model_mode: object, skip_responses_api_bridge: bool) -> NativeChat | NativeResponses:
-    """``model_mode`` is the ``mode`` that ``responses_api_bridge_check`` resolved for the deployment."""
-    if model_mode == "responses" and not skip_responses_api_bridge:
+def plan_chat_route(responses_mode_model: bool, skip_responses_api_bridge: bool) -> NativeChat | NativeResponses:
+    """``responses_mode_model`` is whether ``responses_api_bridge_check`` resolved the deployment to mode ``responses``."""
+    if responses_mode_model and not skip_responses_api_bridge:
         return NativeResponses()
     return NativeChat()
